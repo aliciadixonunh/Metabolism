@@ -2,7 +2,7 @@
 
 ### Author: Alicia Dixon, Univeristy of New Hampshire
 
-#### Date Created:
-#### Last Modifed:
-#### Purpose:
-#### Objectives
+#### Date Created: 2/2/2024
+#### Last Modifed: 2/8/2024
+#### Purpose: to model metabolism in a tropical freshwater stream in order to see climatic disturbance effects.
+#### Objectives: TBD

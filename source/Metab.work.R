@@ -2,7 +2,7 @@
 
 #Author: Alicia Dixon
 
-#Last edited: 2/25/2024
+#Last edited: 3/4/2024
 
 
 #You may first need to install the unitted dependency:
@@ -34,6 +34,7 @@ library(dataRetrieval)
 library(zoo)
 library(RCurl)
 library(naniar)
+library(tools)
 
 
 
@@ -45,6 +46,8 @@ temp_2014 <- read.csv("./data/Temp_2014.csv")
 #discharge <- read.csv("./data/discharge_2013.csv")
 pressure <- read.csv("./data/pressure_data.csv")
 depth <- read.csv("./data/depth_2006_2023.csv")
+Sonadora1 <- read.csv("./data/Sonadora_depth_18761.csv")
+Sonadora2 <- read.csv("./data/Sonadora_depth_17276.csv")
 #lux_2016 <- read.csv("light_lux_2016.csv")  ##not needed if we have PAR from tower
       
       ##SPC not needed if we use 0 for streams
@@ -69,6 +72,15 @@ depth <- unite(depth, col='local.time', c('Date', 'Time'), sep=' ')
 depth$depth <- (depth$stage_ft)*0.3048 
 #remove stage (ft) column
 depth = subset(depth, select = -c(2) )
+
+
+###cleaning up Sonadora data
+#combining Sonadora data
+QSdepth <- full_join(Sonadora1, Sonadora2, by = c("Date", "stage_ft"))
+#converting feet to meters for depth
+QSdepth$QSdepth <- (QSdepth$stage_ft)*0.3048 
+#remove stage (ft) column
+QSdepth = subset(QSdepth, select = -c(2) )
 
 
 ##merging all datasets into one table
@@ -240,6 +252,18 @@ rstan::traceplot(mcmc, pars='K600_daily', nrow=3)
     DO_15$depth_interp <- na.approx(DO_15$depth, maxgap = 672 )
     
 
+    ###filling in month long gaps using sonadora relaitonship
+    ####creating model####
+    a <- exp(0.19348)
+    b <- 0.07867
+    #exponential model
+    depth_pred <- a*exp(b*QSdepth$QSdepth)
+    
+    #using exponential model to fill in 
+    DO_15$depth_interp <- ifelse(is.na(DO_15$depth_interp) == TRUE, depth_pred[DO_15$depth_interp %in% QSdepth$QSdepth], DO_15$depth_interp)
+    
+    
+    
     
     ##local time to solar time
     local.time <- as.POSIXct(DO_15$local.time, tz='America/Puerto_Rico')
@@ -540,12 +564,106 @@ rstan::traceplot(mcmc, pars='K600_daily', nrow=3)
     met16<- metab(bayes_specs, data=QP16)
     
     #viewing
-    met17
+    met16
     predict_metab(met16)
     plot_metab_preds(met16)
     get_params(met16)
     plot_DO_preds(met16)
     
+    
+    
+    #troubleshooting 2016
+    remove.packages(c("rstan","StanHeaders"))
+    install.packages("StanHeaders", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+    install.packages("rstan", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+    
+    
+####1D2. Prepping 2016-2018####
+    
+    #select data for 2016-2018
+    DO_678 <- subset(metabdata, format(as.Date(local.time),"%Y") %in% c("2016", "2017", "2018"))
+    
+    
+    ###taking hourly depth data to fill in 15 min gaps (NA) by averaging the above and below values
+    #delete last three rows to end on an hour
+    DO_678 <- DO_678[0:(nrow(DO_678)-3),]
+    #interpolate, where max gap sets a week as the maxium gap to fill 
+    DO_678$depth_interp <- na.approx(DO_678$depth, maxgap = 672 )
+    
+    
+    
+    ##local time to solar time conversion
+    local.time <- as.POSIXct(DO_678$local.time, tz='America/Puerto_Rico')
+    DO_678$solar.time <- calc_solar_time(local.time, longitude=-65.69)
+    
+    
+    
+    #Generate light column
+    DO_678$light<-calc_light(DO_678$solar.time,
+                            latitude = Latitude,
+                            longitude= Longitude)
+    
+    #Calculate DO at saturation
+    DO_678$DO.sat <- calc_DO_sat(
+      temp=DO_678$temp.water,
+      press=DO_678$press_mb,
+      salinity.water = 0,)
+    
+    
+    #cleaning up DO16
+    newDO678 = subset(DO_678, select = -c(1, 4:6))
+    QP678 <- newDO678[!duplicated(newDO678$solar.time), ]
+    #renaming depth_interp back to depth for model requirements
+    colnames(QP678)[3] ="depth"
+    
+    
+    #looking at missing values
+    gg_miss_var(QP678)
+    vis_miss(QP678)
+    
+    
+    
+    
+    #streamMetab specs
+    bayes_name <- mm_name(
+      type='bayes', pool_K600='normal', 
+      err_obs_iid=TRUE, err_proc_acor=FALSE, err_proc_iid=TRUE)
+    bayes_name
+    
+    
+    bayes_specs <- specs(bayes_name)
+    bayes_specs
+    
+    #Alicia specs modified with more burnin steps and with default values
+    bayes_specs <- specs(bayes_name,
+                         burnin_steps = 1000,
+                         saved_steps = 1000,
+                         K600_daily_meanlog_meanlog = 2.484906649788,
+                         K600_daily_meanlog_sdlog = 1.32,
+                         K600_daily_sdlog_sigma = 0.5,
+                         n_cores=4, verbose=FALSE)
+    
+    
+    
+    #fitting the code
+    met678<- metab(bayes_specs, data=QP678)
+    
+    #viewing
+    met678
+    predict_metab(met678)
+    plot_metab_preds(met678)
+    get_params(met678)
+    plot_DO_preds(met678)
+    
+    
+    
+    
+    
+    #saving stats and numbers
+    met678results <- predict_metab(met678)
+    write.csv(met678results, "./data/met678_03072024/met678_model_results.csv", row.names=TRUE)
+    
+    write.csv(met678@fit[["daily"]], "./data/met678_03072024/met678_stats.csv", row.names=TRUE)
     
     
 #### 1E. Prepping for just 2014####
@@ -677,6 +795,8 @@ rstan::traceplot(mcmc, pars='K600_daily', nrow=3)
     
     
 testdf= met14@fit[["daily"]]
+
+
     
 #### 1F. Prepping for just 2019####
     
